@@ -5,392 +5,425 @@ import threading
 import queue
 import time
 from dotenv import load_dotenv
+from collections import defaultdict
+
 # Load environment variables
 load_dotenv()
 
-# 🔐 Bot Token & Admin ID from environment variables
-BOT_TOKEN = os.getenv('BOT_TOKEN', '')
-ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', ''))  # Default fallback
+# 🔐 Configuration from environment variables
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '5370478729'))  # Default fallback
+
+if not BOT_TOKEN:
+    raise ValueError("No BOT_TOKEN environment variable set")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# Data storage
 user_links = {}
 task_queue = queue.Queue()
-user_request_count = {}
+user_request_count = defaultdict(int)
 user_info = {}
+active_users = set()  # Track active users
+processing_users = set()  # Track currently processing users
 
-REQUIRED_CHANNELS = ['@odri_modz', '@Tech_Shreyansh1']
-
-# 🔤 Static messages
+# 🔤 Enhanced messages with better formatting
 MESSAGES = {
-    'start': (
-        "👋 Welcome Lover 💘!\n\n"
-        "With this bot, you can easily Download:\n"
-        "👉 Facebook videos\n"
-        "👉 Instagram videos\n"
-        "👉 TikTok videos (No watermark)\n\n"
-        "Just send me a video link, and I’ll handle the rest. 📥\n\n"
-        "🛠 Developed by: @Rana_Odri 👻\n"
-        "💞 Beloved BY : @Tech_Shreyansh 💕"
-    ),
-    'join_required': (
-        "🚫 You must join our channels to use this bot.\n\n"
-        "Please join all the required channels below and press /start again."
-    ),
-    'choose_quality': "📥 Please select your preferred video quality:",
-    'in_queue': "⏳ Your request is in the queue. Please wait a moment...",
-    'downloading': "📥 Starting download...",
-    'uploading': "📤 Uploading your video...",
-    'no_formats': "⚠️ No downloadable video formats were found for this link.",
+    'start': """
+🌟 *Welcome to Video Downloader Bot!* 🌟
+
+With this bot, you can download high-quality videos from:
+- Facebook 🟦
+- Instagram 📷
+- TikTok 🎵
+
+✨ *Features:*
+✅ No watermark for TikTok
+✅ Multiple quality options
+✅ Fast downloads
+
+🛠 *Developer:* @Rana_Odri
+💖 *Sponsored by:* @Tech_Shreyansh
+
+Just send me a video link to get started!
+""",
+    'choose_quality': "🎚 *Select Video Quality:*\nChoose from the options below:",
+    'in_queue': "⏳ Your request is in queue. Please wait...",
+    'downloading': "📥 *Download Started*\nPreparing your video...",
+    'uploading': "📤 *Uploading...*\nYour video will be ready soon!",
+    'no_formats': "⚠️ *Error*\nNo downloadable formats found for this link.",
+    'processing': "🔄 Processing your request...",
+    'invalid_link': "❌ *Invalid Link*\nPlease send a valid Facebook, Instagram, or TikTok URL.",
+    'admin_stats': """
+📊 *Admin Statistics*
+
+👥 Total Users: {}
+🟢 Active Users: {}
+📥 Total Requests: {}
+
+⭐ *Top Users* ⭐
+{}
+""",
+    'user_stats': "👤 {} - {} requests",
+    'rate_limit': "🚫 *Too Many Requests*\nPlease wait before sending another link."
 }
 
-# 🚀 Start Command
+MAX_REQUESTS_PER_MINUTE = 3
+
+# 🎨 Helper function for progress bars
+def create_progress_bar(percent, total_blocks=10):
+    filled = int(percent / 100 * total_blocks)
+    return "🟩" * filled + "⬜️" * (total_blocks - filled)
+
+# 🚀 Start Command with enhanced keyboard
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    # Inline keyboard with join buttons
-    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-    join1 = telebot.types.InlineKeyboardButton("Join Odri Modz 👻", url="https://t.me/odri_modz")
-    join2 = telebot.types.InlineKeyboardButton("Join Tech Shreyansh 🖥️", url="https://t.me/Tech_Shreyansh1")
-    markup.add(join1, join2)
-
-    bot.send_message(message.chat.id, MESSAGES['start'], reply_markup=markup)
-
-
+    user_id = message.from_user.id
+    active_users.add(user_id)  # Track active user
     
-# ✅ Start
+    # Store user info
+    user_info[user_id] = {
+        'username': message.from_user.username,
+        'name': f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip(),
+        'join_date': time.strftime("%Y-%m-%d %H:%M:%S")
+    }
 
+    # Create welcome message with buttons
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    btn1 = telebot.types.InlineKeyboardButton("📘 Tutorial", callback_data="tutorial")
+    btn2 = telebot.types.InlineKeyboardButton("🛠 Support", url="t.me/Rana_Odri")
+    btn3 = telebot.types.InlineKeyboardButton("⭐ Rate", callback_data="rate")
+    markup.add(btn1, btn2, btn3)
+    
+    bot.send_message(
+        message.chat.id,
+        MESSAGES['start'],
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
 
-
-# 🔄 Prevent multiple simultaneous requests and handle invalid texts/links
-processing_users = set()
-
+# 🔄 Main handler with rate limiting
 @bot.message_handler(func=lambda message: True)
-def fallback_handler(message):
+def handle_message(message):
     chat_id = message.chat.id
+    user_id = message.from_user.id
     text = message.text.strip()
 
-    # ⛔ Check if already processing
+    # Rate limiting
+    current_time = time.time()
+    if user_id in user_request_count:
+        last_request_time = user_request_count[user_id].get('last_request', 0)
+        if current_time - last_request_time < 60:  # 1 minute window
+            count = user_request_count[user_id].get('count', 0)
+            if count >= MAX_REQUESTS_PER_MINUTE:
+                bot.reply_to(message, MESSAGES['rate_limit'])
+                return
+            user_request_count[user_id]['count'] = count + 1
+        else:
+            user_request_count[user_id] = {'count': 1, 'last_request': current_time}
+    else:
+        user_request_count[user_id] = {'count': 1, 'last_request': current_time}
+
+    # Check if already processing
     if chat_id in processing_users:
-        bot.reply_to(message, "⏳ Send Another Link After Finish This One.")
+        bot.reply_to(message, "⏳ Please wait until your current download completes.")
         return
 
-    # ✅ Check for valid supported links
-    if any(domain in text for domain in ['facebook.com', 'fb.watch', 'instagram.com', 'tiktok.com']):
-        processing_users.add(chat_id)
-        try:
-            handle_platform_link(message)
-        finally:
-            processing_users.discard(chat_id)
+    # Validate URL
+    if not any(domain in text for domain in ['facebook.com', 'fb.watch', 'instagram.com', 'tiktok.com']):
+        bot.reply_to(message, MESSAGES['invalid_link'])
         return
 
-    # ❌ Invalid or unsupported text/link
-    bot.reply_to(message, "⚠️ Unsupported message.\n What You Mean")
+    processing_users.add(chat_id)
+    try:
+        handle_platform_link(message)
+    except Exception as e:
+        print(f"Error processing message: {e}")
+        bot.reply_to(message, f"⚠️ An error occurred: {str(e)}")
+    finally:
+        processing_users.discard(chat_id)
 
-
-
-
-
-# 👨‍💼 Admin Panel
-@bot.message_handler(commands=['odri'])
-def admin_panel(message):
-    if message.from_user.id != ADMIN_USER_ID:
-        bot.reply_to(message, "🚫 You are not authorized.")
-        return
-
-    if not user_request_count:
-        bot.reply_to(message, "📊 No requests yet.")
-        return
-
-    total_users = len(user_request_count)
-    total_requests = sum(user_request_count.values())
-    report = f"📊 Total Users: {total_users}\n📦 Total Requests: {total_requests}\n\n"
-
-    for uid, count in user_request_count.items():
-        name = user_info.get(uid, "Unknown")
-        report += f"👤 {name} ➜ {count} times\n"
-
-    bot.send_message(message.chat.id, report)
-
-# 🌐 Handlers for each platform
-@bot.message_handler(func=lambda msg: 'facebook.com' in msg.text or 'fb.watch' in msg.text)
-def handle_facebook(msg):
-    handle_platform_link(msg)
-
-@bot.message_handler(func=lambda msg: 'instagram.com' in msg.text)
-def handle_instagram(msg):
-    handle_platform_link(msg)
-
-@bot.message_handler(func=lambda msg: 'tiktok.com' in msg.text)
-def handle_tiktok(msg):
-    handle_platform_link(msg)
-
-# 🌐 Unified handler
+# 🌐 Platform link handler with better animations
 def handle_platform_link(message):
     url = message.text.strip()
-
-    wait_msg = bot.send_message(message.chat.id, "⏳ Please wait...")
-
-    animation_steps = [
+    chat_id = message.chat.id
+    
+    # Send initial processing message
+    processing_msg = bot.send_message(chat_id, MESSAGES['processing'])
+    
+    # Animation sequence
+    steps = [
         "🔍 Analyzing link...",
         "🔗 Validating URL...",
-        "🧠 Checking platform compatibility...",
-        "📡 Connecting to server...",
+        "📡 Connecting to source...",
         "📂 Fetching video data...",
-        "📊 Parsing available formats...",
-        "🎛 Filtering best quality options...",
-        "🛠 Preparing video info...",
-        "✅ Almost done...",
-        "🚀 Ready!"
+        "🎚 Checking available formats...",
+        "⚙️ Preparing download options...",
+        "✅ Ready!"
     ]
-
-    for step in animation_steps:
+    
+    for step in steps:
         try:
-            bot.edit_message_text(step, wait_msg.chat.id, wait_msg.message_id)
+            bot.edit_message_text(step, chat_id, processing_msg.message_id)
+            time.sleep(0.7)
         except:
             pass
-        time.sleep(1)
 
-    try:
-        bot.delete_message(wait_msg.chat.id, wait_msg.message_id)
-    except:
-        pass
-
+    # Get available formats
     formats = get_available_formats(url)
-
-
     if not formats:
-        msg = bot.reply_to(message, MESSAGES['no_formats'])
-        try:
-            bot.delete_message(msg.chat.id, msg.message_id)
-        except:
-            pass
+        bot.edit_message_text(MESSAGES['no_formats'], chat_id, processing_msg.message_id)
         return
 
-    user_links[message.chat.id] = {'url': url, 'formats': formats}
-
-    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
-    buttons = [telebot.types.InlineKeyboardButton(f"{f['height']}p", callback_data=str(f['height'])) for f in formats]
+    user_links[chat_id] = {'url': url, 'formats': formats}
+    
+    # Create quality selection keyboard
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    buttons = [
+        telebot.types.InlineKeyboardButton(
+            f"{f['height']}p {'🔥' if i == 0 else ''}",
+            callback_data=str(f['height'])
+        ) 
+        for i, f in enumerate(formats[:4])  # Show max 4 quality options
+    ]
     markup.add(*buttons)
+    
+    # Add help button
+    markup.add(telebot.types.InlineKeyboardButton("ℹ️ Help", callback_data="quality_help"))
+    
+    bot.edit_message_text(
+        MESSAGES['choose_quality'],
+        chat_id,
+        processing_msg.message_id,
+        reply_markup=markup
+    )
 
-    bot.send_message(message.chat.id, MESSAGES['choose_quality'], reply_markup=markup)
-
-# 📦 Quality Selection
+# 📦 Quality selection handler
 @bot.callback_query_handler(func=lambda call: True)
-def handle_quality_selection(call):
+def handle_callback(call):
     chat_id = call.message.chat.id
-    selection = call.data
-    info = user_links.get(chat_id)
-
-    if not info:
+    user_id = call.from_user.id
+    
+    if call.data == "quality_help":
+        bot.answer_callback_query(call.id, "Higher numbers mean better quality but larger file size")
         return
-
-    selected_fmt = next((f for f in info['formats'] if str(f['height']) == selection), None)
+    
+    if call.data == "tutorial":
+        bot.answer_callback_query(call.id, "Coming soon!")
+        return
+    
+    # Process quality selection
+    info = user_links.get(chat_id)
+    if not info:
+        bot.answer_callback_query(call.id, "Session expired. Please send the link again.")
+        return
+    
+    selected_fmt = next((f for f in info['formats'] if str(f['height']) == call.data), None)
     if selected_fmt:
-        uid = chat_id
-        uname = call.from_user.username or f"{call.from_user.first_name} {call.from_user.last_name or ''}".strip()
-        user_request_count[uid] = user_request_count.get(uid, 0) + 1
-        user_info[uid] = uname
-
         task_queue.put((call.message, info['url'], selected_fmt['height']))
+        bot.answer_callback_query(call.id, f"Added to queue: {selected_fmt['height']}p")
+        
+        # Show queue position
+        queue_size = task_queue.qsize()
+        if queue_size > 1:
+            bot.send_message(chat_id, f"⏳ Your position in queue: {queue_size}")
 
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except:
-            pass
-
-        wait_msg = bot.send_message(chat_id, MESSAGES['in_queue'])
-        time.sleep(2)
-        try:
-            bot.delete_message(chat_id, wait_msg.message_id)
-        except:
-            pass
-
-# 🧠 Get formats
+# 🧠 Get available formats with better error handling
 def get_available_formats(url):
     try:
-        ydl_opts = {'quiet': True, 'skip_download': True}
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'simulate': True
+        }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats = []
             seen = set()
-            for f in info['formats']:
+            
+            for f in info.get('formats', []):
                 if f.get('height') and f['height'] not in seen:
                     seen.add(f['height'])
                     formats.append({
                         'height': f['height'],
-                        'format_id': f['format_id']
+                        'format_id': f['format_id'],
+                        'filesize': f.get('filesize', 0)
                     })
-            return sorted(formats, key=lambda x: x['height'])
+            
+            # Sort by quality and filter unrealistic formats
+            formats = sorted(
+                [f for f in formats if 100 <= f['height'] <= 2160],
+                key=lambda x: x['height'],
+                reverse=True
+            )
+            
+            return formats[:4]  # Return max 4 quality options
+            
     except Exception as e:
-        print(f"[Format Error] {e}")
+        print(f"Error getting formats: {e}")
         return []
 
-# 🧵 Worker Thread
-def worker():
-    while True:
-        try:
-            message, url, height = task_queue.get()
-            download_and_send_video(message, url)
-        except Exception as e:
-            print(f"[Worker Error] {e}")
-
-threading.Thread(target=worker, daemon=True).start()
-
-
-
-
-def upload_and_track_progress(chat_id, file_path, message_id):
-    try:
-        total_size = os.path.getsize(file_path)
-        start_time = time.time()
-        uploaded = 0
-        total_blocks = 12
-
-        # Create thread-safe shared variable
-        upload_progress = {'uploaded': 0}
-
-        def track_upload():
-            while upload_progress['uploaded'] < total_size:
-                elapsed = time.time() - start_time
-                speed = upload_progress['uploaded'] / elapsed if elapsed > 0 else 0
-                eta = (total_size - upload_progress['uploaded']) / speed if speed > 0 else 0
-
-                percent = upload_progress['uploaded'] / total_size * 100
-                filled_blocks = int(percent / 100 * total_blocks)
-                bar = "🟩" * filled_blocks + "⬜️" * (total_blocks - filled_blocks)
-
-                speed_text = f"{speed / 1024:.1f} KB/s"
-                eta_text = f"{int(eta)}s"
-
-                text = (
-                    f"⏫ *Uploading...*\n"
-                    f"{bar} `{percent:.1f}%`\n"
-                    f"⚡️ Speed: `{speed_text}`\n"
-                    f"⏳ ETA: `{eta_text}`"
-                )
-                try:
-                    bot.edit_message_text(chat_id, message_id, text, parse_mode="Markdown")
-                except:
-                    pass
-
-                time.sleep(1)
-
-        # Start progress tracking thread
-        tracker_thread = threading.Thread(target=track_upload, daemon=True)
-        tracker_thread.start()
-
-        # Start actual upload
-        with open(file_path, 'rb') as video:
-            data = b''
-            chunk_size = 1024 * 64
-            while True:
-                chunk = video.read(chunk_size)
-                if not chunk:
-                    break
-                data += chunk
-                upload_progress['uploaded'] += len(chunk)
-
-        with open(file_path, 'rb') as video:
-            bot.send_video(chat_id, video)
-
-    except Exception as e:
-        try:
-            bot.edit_message_text(chat_id, message_id, f"⚠️ Upload Error: {e}")
-        except:
-            pass
-
-# 📥 Download & Upload
-
-
-def download_and_send_video(message, url):
+# 📥 Download function with improved progress tracking
+def download_and_send_video(message, url, quality):
     chat_id = message.chat.id
+    file_path = f"downloads/{chat_id}_{int(time.time())}.mp4"
+    
+    # Create downloads directory if not exists
+    os.makedirs("downloads", exist_ok=True)
+    
+    # Send initial download message
     progress_msg = bot.send_message(chat_id, MESSAGES['downloading'])
-    file_path = f"{chat_id}_video.mp4"
-
-    def progress_hook(d):
-        if d['status'] == 'downloading':
-            downloaded = d.get('downloaded_bytes', 0)
-            total = d.get('total_bytes', 1)
-            percent = downloaded / total * 100
-
-            total_blocks = 12
-            filled_blocks = int(percent / 100 * total_blocks)
-            bar = "🟩" * filled_blocks + "⬜️" * (total_blocks - filled_blocks)
-
-            speed = d.get('speed', 0)
-            eta = d.get('eta', 0)
-
-            speed_text = f"{speed / 1024:.1f} KB/s" if speed else "N/A"
-            eta_text = f"{eta}s" if eta else "N/A"
-
-            text = (
-                f"📥 *Downloading...*\n"
-                f"{bar} `{percent:.1f}%`\n"
-                f"⚡️ Speed: `{speed_text}`\n"
-                f"⏳ ETA: `{eta_text}`"
-            )
-
-            try:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=progress_msg.message_id,
-                    text=text,
-                    parse_mode='Markdown'
-                )
-            except:
-                pass
-
+    
     try:
         ydl_opts = {
-            'format': 'bestvideo+bestaudio/best',
+            'format': f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]',
             'outtmpl': file_path,
             'merge_output_format': 'mp4',
-            'progress_hooks': [progress_hook],
-            'quiet': True
+            'quiet': True,
+            'progress_hooks': [lambda d: download_progress(d, chat_id, progress_msg.message_id)],
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4'
+            }]
         }
-
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-
-        bot.delete_message(chat_id, progress_msg.message_id)
-
-        # 📤 Uploading animation
-        uploading_msg = bot.send_message(chat_id, "⏫ *Uploading...*\n⬜️⬜️⬜️⬜️⬜️⬜️⬜️⬜️⬜️⬜️⬜️⬜️", parse_mode="Markdown")
-        total_blocks = 12
-        for i in range(1, total_blocks + 1):
-            bar = "🟩" * i + "⬜️" * (total_blocks - i)
-            percent_text = f"{(i / total_blocks) * 100:.1f}%"
-            try:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=uploading_msg.message_id,
-                    text=f"⏫ *Uploading...*\n{bar} `{percent_text}`",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-            time.sleep(0.5)
-
-        with open(file_path, 'rb') as video:
-            bot.send_chat_action(chat_id, 'upload_video')
-            bot.send_video(chat_id, video)
-
-        try:
-            bot.delete_message(chat_id, uploading_msg.message_id)
-        except:
-            pass
-
-        os.remove(file_path)
-
+        
+        # Upload the file
+        upload_video(chat_id, file_path, progress_msg.message_id)
+        
     except Exception as e:
+        print(f"Download error: {e}")
+        bot.edit_message_text(f"❌ Download failed: {str(e)}", chat_id, progress_msg.message_id)
+    finally:
+        # Clean up
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+def download_progress(d, chat_id, message_id):
+    if d['status'] == 'downloading':
+        percent = d.get('_percent_str', '0%').strip('%')
+        try:
+            percent = float(percent)
+        except:
+            percent = 0
+            
+        bar = create_progress_bar(percent)
+        speed = d.get('_speed_str', 'N/A')
+        eta = d.get('_eta_str', 'N/A')
+        
+        text = f"""
+📥 *Downloading...*
+{bar} `{percent:.1f}%`
+        
+⚡️ Speed: `{speed}`
+⏳ ETA: `{eta}`
+"""
         try:
             bot.edit_message_text(
                 chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text=f"⚠️ Error: {str(e)}"
+                message_id=message_id,
+                text=text,
+                parse_mode="Markdown"
             )
         except:
             pass
 
-# ✅ Start polling
-bot.polling("🥳 Bot Started........")
+def upload_video(chat_id, file_path, progress_msg_id):
+    try:
+        file_size = os.path.getsize(file_path) / (1024 * 1024)  # in MB
+        if file_size > 50:  # Telegram file size limit is 50MB
+            bot.edit_message_text(
+                "⚠️ File too large (max 50MB)",
+                chat_id,
+                progress_msg_id
+            )
+            return
+        
+        # Start upload progress
+        bot.edit_message_text(
+            MESSAGES['uploading'],
+            chat_id,
+            progress_msg_id
+        )
+        
+        # Send video with progress tracking
+        with open(file_path, 'rb') as video_file:
+            bot.send_chat_action(chat_id, 'upload_video')
+            bot.send_video(
+                chat_id,
+                video_file,
+                supports_streaming=True,
+                timeout=100
+            )
+        
+        # Clean up
+        bot.delete_message(chat_id, progress_msg_id)
+        
+    except Exception as e:
+        print(f"Upload error: {e}")
+        bot.edit_message_text(
+            f"⚠️ Upload failed: {str(e)}",
+            chat_id,
+            progress_msg_id
+        )
+
+# 👨‍💼 Enhanced Admin Panel
+@bot.message_handler(commands=['odri'])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_USER_ID:
+        bot.reply_to(message, "🚫 Access denied")
+        return
+    
+    if not user_request_count:
+        bot.reply_to(message, "📊 No user data available yet")
+        return
+    
+    total_users = len(user_info)
+    active_count = len(active_users)
+    total_requests = sum(v['count'] for v in user_request_count.values() if isinstance(v, dict))
+    
+    # Get top 5 users
+    top_users = sorted(
+        [(uid, data['count']) for uid, data in user_request_count.items() if isinstance(data, dict)],
+        key=lambda x: x[1],
+        reverse=True
+    )[:5]
+    
+    user_list = "\n".join(
+        [f"{i+1}. {user_info.get(uid, {}).get('name', 'Unknown')} - {count} requests"
+         for i, (uid, count) in enumerate(top_users)]
+    )
+    
+    stats = MESSAGES['admin_stats'].format(
+        total_users,
+        active_count,
+        total_requests,
+        user_list
+    )
+    
+    bot.reply_to(message, stats, parse_mode="Markdown")
+
+# 🧵 Worker thread for processing queue
+def worker():
+    while True:
+        try:
+            message, url, quality = task_queue.get()
+            download_and_send_video(message, url, quality)
+            task_queue.task_done()
+        except Exception as e:
+            print(f"Worker error: {e}")
+            time.sleep(5)
+
+# Start worker threads
+for i in range(3):  # 3 worker threads
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+# Start the bot
+if __name__ == '__main__':
+    print("🥳 Bot Started........")
+    bot.infinity_polling()
