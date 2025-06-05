@@ -42,7 +42,7 @@ With this bot, you can download high-quality videos from:
 ✅ Multiple quality options
 ✅ Fast downloads
 
-🛠 *Developer:* @Rana_Odri
+🛠 *Developer:* @Odri_Modz
 💖 *Sponsored by:* @Tech_Shreyansh
 
 Just send me a video link to get started!
