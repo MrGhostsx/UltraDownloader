@@ -30,7 +30,7 @@ MESSAGES = {
         "👉 Instagram videos\n"
         "👉 TikTok videos (No watermark)\n\n"
         "Just send me a video link, and I’ll handle the rest. 📥\n\n"
-        "🛠 Developed by: @Rana_Odri 👻"
+        "🛠 Developed by: @Rana_Odri 👻\n"
         "💞 Beloved BY : @Tech_Shreyansh 💕"
     ),
     'join_required': (
