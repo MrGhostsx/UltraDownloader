@@ -4,3 +4,9 @@ aiohttp
 Jinja2
 werkzeug
 itsdangerous
+telebot
+yt_dlp
+os
+threading
+queue
+time
