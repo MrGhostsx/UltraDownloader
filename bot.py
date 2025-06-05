@@ -12,7 +12,7 @@ load_dotenv()
 
 # 🔐 Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '5370478729'))  # Default fallback
+ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', ''))  # Default fallback
 
 if not BOT_TOKEN:
     raise ValueError("No BOT_TOKEN environment variable set")
@@ -65,7 +65,37 @@ Just send me a video link to get started!
 {}
 """,
     'user_stats': "👤 {} - {} requests",
-    'rate_limit': "🚫 *Too Many Requests*\nPlease wait before sending another link."
+    'rate_limit': "🚫 *Too Many Requests*\nPlease wait before sending another link.",
+    'tutorial': """
+📘 *Video Downloader Bot Tutorial*
+
+1️⃣ *How to Download Videos:*
+- Simply send a link from:
+  - Facebook (facebook.com, fb.watch)
+  - Instagram (instagram.com)
+  - TikTok (tiktok.com)
+
+2️⃣ *Quality Selection:*
+- After sending a link, you'll see quality options
+- Higher numbers mean better quality but larger files
+- Choose the one that suits your needs
+
+3️⃣ *Download Process:*
+- Your video will be added to the download queue
+- You'll see real-time progress updates
+- The video will be sent to you when ready
+
+4️⃣ *Limitations:*
+- Maximum file size: 50MB (Telegram limit)
+- Rate limit: 3 requests per minute
+
+💡 *Tips:*
+- For best results, use WiFi connection
+- If download fails, try a lower quality option
+- Contact @Rana_Odri for support
+
+🎥 *Happy Downloading!*
+"""
 }
 
 MAX_REQUESTS_PER_MINUTE = 3
@@ -209,7 +239,46 @@ def handle_callback(call):
         return
     
     if call.data == "tutorial":
-        bot.answer_callback_query(call.id, "Coming soon!")
+        # Edit the message to show tutorial
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                text=MESSAGES['tutorial'],
+                parse_mode="Markdown"
+            )
+            
+            # Add a back button
+            markup = telebot.types.InlineKeyboardMarkup()
+            markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="back_to_start"))
+            bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
+        except Exception as e:
+            print(f"Error showing tutorial: {e}")
+            bot.answer_callback_query(call.id, "Error showing tutorial")
+        return
+    
+    if call.data == "back_to_start":
+        # Return to start message
+        try:
+            markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+            btn1 = telebot.types.InlineKeyboardButton("📘 Tutorial", callback_data="tutorial")
+            btn2 = telebot.types.InlineKeyboardButton("🛠 Support", url="t.me/Rana_Odri")
+            btn3 = telebot.types.InlineKeyboardButton("⭐ Rate", callback_data="rate")
+            markup.add(btn1, btn2, btn3)
+            
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                text=MESSAGES['start'],
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"Error returning to start: {e}")
+        return
+    
+    if call.data == "rate":
+        bot.answer_callback_query(call.id, "Rate feature coming soon!")
         return
     
     # Process quality selection
